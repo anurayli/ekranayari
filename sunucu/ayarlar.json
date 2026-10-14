@@ -1,0 +1,11 @@
+{
+  "hedefHz": 30,
+  "yansitmayiDurdur": true,
+  "hzAyarla": true,
+  "yerlesikEkraniYansit": true,
+  "sesAyarla": true,
+  "zoomAyarla": true,
+  "bitisSesi": "Glass",
+  "dockaSabitle": true,
+  "yeniSunucu": "https://raw.githubusercontent.com/anurayli/ekranayari/main/sunucu/"
+}
