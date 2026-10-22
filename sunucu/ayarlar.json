@@ -9,5 +9,7 @@
   "dockaSabitle": true,
   "otomatikIzleme": true,
   "zoomToplantisiniIzle": true,
+  "uykuyuEngelle": true,
+  "sesSeviyesi": 70,
   "yeniSunucu": "https://raw.githubusercontent.com/anurayli/ekranayari/main/sunucu/"
 }

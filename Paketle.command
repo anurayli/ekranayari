@@ -60,6 +60,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key>          <string>AppIcon</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.$SURUM</string>
+  <key>NSHumanReadableCopyright</key>  <string>© 2026 Ali NURAYLI</string>
   <key>CFBundleVersion</key>           <string>$SURUM</string>
   <key>LSMinimumSystemVersion</key>    <string>12.0</string>
   <key>LSUIElement</key>               <true/>

@@ -12,6 +12,7 @@ import AppKit
 import CoreAudio
 import CoreGraphics
 import Foundation
+import IOKit.pwr_mgt
 
 // MARK: - Yollar ve günlük
 
@@ -86,6 +87,10 @@ var bitisSesi = "Glass"   // "" = ses yok
 var dockaSabitlensin = true
 var otomatikIzlemeIzinli = true     // uzaktan: false ise arka plan izleyicisi tamamen kaldırılır
 var zoomToplantisiniIzle = true     // izleyici: Zoom toplantısı başlayınca hoparlörü ayarla
+var uykuyuEngelleVarsayilan = true  // izleyici: harici ekran bağlıyken Mac uykuya geçmesin
+var sesSeviyesi = 70                // harici ekran sesi seçilince ayarlanacak seviye (%); -1 = dokunma
+let gelistirici = "Ali NURAYLI"
+let geriBildirimAdresi = "anurayli@sevizmir.k12.tr"
 
 func ayarlariUygula(_ j: [String: Any]) {
     if let v = j["hedefHz"] as? Double { hedefHz = v }
@@ -98,6 +103,8 @@ func ayarlariUygula(_ j: [String: Any]) {
     if let v = j["dockaSabitle"] as? Bool { dockaSabitlensin = v }
     if let v = j["otomatikIzleme"] as? Bool { otomatikIzlemeIzinli = v }
     if let v = j["zoomToplantisiniIzle"] as? Bool { zoomToplantisiniIzle = v }
+    if let v = j["uykuyuEngelle"] as? Bool { uykuyuEngelleVarsayilan = v }
+    if let v = j["sesSeviyesi"] as? Int { sesSeviyesi = v }
     // Sunucu taşındığında: yeni adres buraya yazılır, program bir dahaki açılışta oradan okur
     if let v = j["yeniSunucu"] as? String, !v.isEmpty {
         try? v.write(to: destek.appendingPathComponent("sunucu.txt"), atomically: true, encoding: .utf8)
@@ -378,6 +385,13 @@ func hariciEkranSesiniSec(ekranAdlari: [String]) {
     }
     if varsayilanCikisYap(d) {
         log("4) ✓ Ses çıkışı: \(sesAdi(d))"); ozet.append("Ses: \(sesAdi(d))")
+        if sesSeviyesi >= 0 {
+            let n = min(100, sesSeviyesi)
+            var h: NSDictionary?
+            NSAppleScript(source: "set volume output volume \(n) without output muted")?.executeAndReturnError(&h)
+            if h == nil { log("4) ✓ Ses seviyesi: %\(n)"); ozet.append("Ses %\(n)") }
+            else { log("4) Ses seviyesi bu aygıtta ayarlanamıyor — atlandı") }
+        }
     } else {
         log("4) ✗ Ses çıkışı ayarlanamadı: \(sesAdi(d))")
     }
@@ -682,7 +696,7 @@ func izinleriHazirla() {
     let secim = uyari("Ekran Ayarı — ilk kurulum",
         "Zoom ses ayarını yapabilmek için bir kez Erişilebilirlik izni gerekiyor.\n\n" +
         "\"İzin Ver\"e bastığınızda Sistem Ayarları açılacak. Listede \"EkranAyari\"nın yanındaki anahtarı açmanız yeterli " +
-        "(istenirse parolanızı girin).\n\nİzni verince program kendiliğinden devam eder.",
+        "(istenirse parolanızı girin). Listede yoksa, Finder'da seçili gelen EkranAyari'yı listeye sürükleyip anahtarını açın.\n\nİzni verince program kendiliğinden devam eder.",
         ["İzin Ver", "Şimdilik Geç"])
     guard secim == 0 else { log("İzin: kullanıcı erteledi"); return }
     bekciKur(240)
@@ -697,6 +711,9 @@ func izinleriHazirla() {
     _ = AXIsProcessTrustedWithOptions(secenek)
     bekle(0.5)
     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    // Listede görünmezse kullanıcı Finder'daki uygulamayı listeye sürükleyebilsin
+    bekle(1.0)
+    NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
 
     let bitis = Date().addingTimeInterval(180)
     while Date() < bitis && !erisilebilirlikVarMi() { bekle(1) }
@@ -725,6 +742,11 @@ func otomatikAcikMi() -> Bool {
 func otomatikTercihKaydet(_ acik: Bool) {
     try? (acik ? "acik" : "kapali").write(to: tercihDosyasi, atomically: true, encoding: .utf8)
     log("İzleyici: otomatik çalışma \(acik ? "AÇILDI" : "KAPATILDI")")
+}
+
+/// Menüden değiştirilen tercihler (kullanıcı seçmediyse sunucu ayarı geçerli)
+func yerelTercih(_ anahtar: String, _ varsayilan: Bool) -> Bool {
+    UserDefaults.standard.object(forKey: anahtar) == nil ? varsayilan : UserDefaults.standard.bool(forKey: anahtar)
 }
 
 func izleyiciPid() -> pid_t? {
@@ -795,6 +817,8 @@ final class Izleyici: NSObject, NSApplicationDelegate {
     var sonBitis = Date.distantPast
     var bekleyen: DispatchWorkItem?
     var toplantiAcikti = false
+    var uykuOgesi: NSMenuItem?
+    var uykuKilidi: IOPMAssertionID = 0
 
     func applicationDidFinishLaunching(_ n: Notification) {
         try? String(ProcessInfo.processInfo.processIdentifier).write(to: izleyiciPidDosyasi, atomically: true, encoding: .utf8)
@@ -802,6 +826,7 @@ final class Izleyici: NSObject, NSApplicationDelegate {
         bilinenHariciler = Set(hariciEkranlar())
         toplantiAcikti = zoomToplantiPenceresiVar()
         menuKur()
+        uykuDurumunuGuncelle()
         CGDisplayRegisterReconfigurationCallback(ekranGeriCagrim, Unmanaged.passUnretained(self).toOpaque())
         Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in self?.zoomKontrol() }
         log("İzleyici: başladı (sürüm \(kendiSurumum()), otomatik \(otomatikAcikMi() ? "açık" : "kapalı"))")
@@ -829,8 +854,13 @@ final class Izleyici: NSObject, NSApplicationDelegate {
         m.addItem(oge("Şimdi çalıştır", #selector(simdi)))
         let o = oge("Kablo takılınca otomatik çalış", #selector(otomatikDegistir))
         m.addItem(o); otomatikOgesi = o
+        let u = oge("Ekran bağlıyken uykuya geçme", #selector(uykuDegistir))
+        m.addItem(u); uykuOgesi = u
+        m.addItem(oge("Ders sırasında bildirimleri sustur…", #selector(bildirimSustur)))
         m.addItem(.separator())
         m.addItem(oge("Kayıtları göster", #selector(kayitlar)))
+        m.addItem(oge("Geri bildirim gönder…", #selector(geriBildirim)))
+        m.addItem(oge("Ekran Ayarı hakkında", #selector(hakkinda)))
         durum = d
         d.menu = m
         guncelGorunum()
@@ -841,12 +871,84 @@ final class Izleyici: NSObject, NSApplicationDelegate {
     func guncelGorunum() {
         let acik = otomatikAcikMi()
         otomatikOgesi?.state = acik ? .on : .off
+        uykuOgesi?.state = yerelTercih("uykuyuEngelle", uykuyuEngelleVarsayilan) ? .on : .off
         durum?.button?.appearsDisabled = !acik
         durum?.button?.toolTip = acik ? "Ekran Ayarı — kablo takılınca otomatik çalışır" : "Ekran Ayarı — otomatik çalışma kapalı"
     }
     @objc func simdi() { isiBaslat([], neden: "menüden başlatıldı") }
     @objc func otomatikDegistir() { otomatikTercihKaydet(!otomatikAcikMi()); guncelGorunum() }
     @objc func kayitlar() { NSWorkspace.shared.open(logURL) }
+
+    @objc func uykuDegistir() {
+        let yeni = !yerelTercih("uykuyuEngelle", uykuyuEngelleVarsayilan)
+        UserDefaults.standard.set(yeni, forKey: "uykuyuEngelle")
+        log("İzleyici: uyku engelleme \(yeni ? "AÇILDI" : "KAPATILDI")")
+        uykuDurumunuGuncelle(); guncelGorunum()
+    }
+
+    /// Harici ekran bağlıyken ekranın ve Mac'in boşta kalınca uyumasını engeller
+    func uykuDurumunuGuncelle() {
+        let gerek = yerelTercih("uykuyuEngelle", uykuyuEngelleVarsayilan) && !hariciEkranlar().isEmpty
+        if gerek && uykuKilidi == 0 {
+            let r = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                                                IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                                "Ekran Ayarı: harici ekran bağlı" as CFString, &uykuKilidi)
+            log(r == kIOReturnSuccess ? "İzleyici: uyku engellendi (harici ekran bağlı)" : "İzleyici: uyku engellenemedi")
+            if r != kIOReturnSuccess { uykuKilidi = 0 }
+        } else if !gerek && uykuKilidi != 0 {
+            IOPMAssertionRelease(uykuKilidi); uykuKilidi = 0
+            log("İzleyici: uyku engeli kaldırıldı")
+        }
+    }
+
+    @objc func bildirimSustur() {
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = "Ders sırasında bildirimleri susturma"
+        a.informativeText = "macOS bunu kendisi yapabiliyor: Ekran Ayarı yerleşik ekranı akıllı tahtaya yansıttığı için, " +
+            "\"Rahatsız Etme\" odağında ekran yansıtılırken otomatik açılma seçeneği açıksa bildirimler ders boyunca kendiliğinden susar.\n\n" +
+            "\"Ayarları Aç\"a basınca Odak ayarları açılır: Rahatsız Etme'yi seçip \"Ekranı yansıtırken / paylaşırken\" " +
+            "seçeneğini açın (adı macOS sürümüne göre biraz farklı olabilir)."
+        a.addButton(withTitle: "Ayarları Aç"); a.addButton(withTitle: "Vazgeç")
+        if a.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Focus-Settings.extension")!)
+        }
+    }
+
+    @objc func geriBildirim() {
+        let surum = kendiSurumum()
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        let son = ((try? String(contentsOf: logURL, encoding: .utf8)) ?? "")
+            .split(separator: "\n").suffix(25).joined(separator: "\n")
+        let konu = "Ekran Ayarı geri bildirim (sürüm \(surum))"
+        let govde = "Merhaba,\n\n[Önerinizi veya yaşadığınız sorunu buraya yazın]\n\n\n" +
+            "— Teknik bilgi —\nSürüm: \(surum)\nmacOS: \(os)\nBilgisayar: \(Host.current().localizedName ?? "?")\n\n" +
+            "Son kayıtlar:\n\(son)\n"
+        if let posta = NSSharingService(named: .composeEmail) {
+            posta.recipients = [geriBildirimAdresi]
+            posta.subject = konu
+            posta.perform(withItems: [govde, logURL])
+        } else {
+            var c = URLComponents(); c.scheme = "mailto"; c.path = geriBildirimAdresi
+            c.queryItems = [URLQueryItem(name: "subject", value: konu), URLQueryItem(name: "body", value: String(govde.prefix(1500)))]
+            if let u = c.url { NSWorkspace.shared.open(u) }
+        }
+        log("İzleyici: geri bildirim penceresi açıldı")
+    }
+
+    @objc func hakkinda() {
+        NSApp.activate(ignoringOtherApps: true)
+        let yazi = NSMutableAttributedString(string:
+            "Akıllı tahta / harici ekran için tek tık ayar:\nyansıtma, 30 Hz, ses çıkışı ve Zoom hoparlörü.\n\n" +
+            "Geliştirici: \(gelistirici)\nGeri bildirim: \(geriBildirimAdresi)\n")
+        yazi.addAttribute(.font, value: NSFont.systemFont(ofSize: 11), range: NSRange(location: 0, length: yazi.length))
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "Ekran Ayarı",
+            .applicationVersion: "1.\(kendiSurumum())",
+            .version: "sürüm \(kendiSurumum())",
+            .credits: yazi
+        ])
+    }
 
     func ekranDegisti() {
         bekleyen?.cancel()
@@ -856,6 +958,7 @@ final class Izleyici: NSObject, NSApplicationDelegate {
     }
 
     func degerlendir() {
+        uykuDurumunuGuncelle()
         let simdiki = Set(hariciEkranlar())
         let yeni = simdiki.subtracting(bilinenHariciler)
         bilinenHariciler = simdiki
