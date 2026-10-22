@@ -12,3 +12,14 @@ sesi harici ekrana verir, açık Zoom toplantısında hoparlörü "Sistemle ayn�
   - `surum.json` + `EkranAyari.zip` — uygulamanın kendisi (Paketle.command üretir)
 
 Ayrıntılar: `BENIOKU.md`
+
+## Otomatik çalışma (sürüm 8+)
+Uygulama bir kez elle açıldıktan sonra arka planda küçük bir izleyici kurar (menü çubuğunda ekran simgesi):
+- **Ekran kablosu takılınca** ayarlar kendiliğinden yapılır.
+- **Ekran bağlıyken Zoom toplantısı başlayınca** hoparlör "Sistemle aynı" yapılır.
+- Menü çubuğundaki simgeden: *Şimdi çalıştır*, *Kablo takılınca otomatik çalış* (aç/kapat), *Kayıtları göster*.
+- Tüm Mac'lerde uzaktan kapatmak için `sunucu/ayarlar.json` → `"otomatikIzleme": false`.
+
+## Otomatik derleme
+`kaynak/main.swift` GitHub'a yüklendiğinde GitHub Actions uygulamayı derler ve `sunucu/` klasörünü günceller
+(`.github/workflows/paketle.yml`). Mac'te Paketle.command çalıştırmaya gerek yoktur.

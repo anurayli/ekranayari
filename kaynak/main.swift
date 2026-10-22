@@ -84,6 +84,8 @@ var adimSes = true
 var adimZoom = true
 var bitisSesi = "Glass"   // "" = ses yok
 var dockaSabitlensin = true
+var otomatikIzlemeIzinli = true     // uzaktan: false ise arka plan izleyicisi tamamen kaldırılır
+var zoomToplantisiniIzle = true     // izleyici: Zoom toplantısı başlayınca hoparlörü ayarla
 
 func ayarlariUygula(_ j: [String: Any]) {
     if let v = j["hedefHz"] as? Double { hedefHz = v }
@@ -94,6 +96,8 @@ func ayarlariUygula(_ j: [String: Any]) {
     if let v = j["zoomAyarla"] as? Bool { adimZoom = v }
     if let v = j["bitisSesi"] as? String { bitisSesi = v }
     if let v = j["dockaSabitle"] as? Bool { dockaSabitlensin = v }
+    if let v = j["otomatikIzleme"] as? Bool { otomatikIzlemeIzinli = v }
+    if let v = j["zoomToplantisiniIzle"] as? Bool { zoomToplantisiniIzle = v }
     // Sunucu taşındığında: yeni adres buraya yazılır, program bir dahaki açılışta oradan okur
     if let v = j["yeniSunucu"] as? String, !v.isEmpty {
         try? v.write(to: destek.appendingPathComponent("sunucu.txt"), atomically: true, encoding: .utf8)
@@ -102,6 +106,8 @@ func ayarlariUygula(_ j: [String: Any]) {
 }
 
 // MARK: - Uzaktan güncelleme
+
+var izleyiciYenidenBaslatilmali = false
 
 func sunucuAdresi() -> String? {
     let oku: (URL) -> String? = { u in
@@ -192,6 +198,7 @@ func guncelle() {
     do {
         _ = try fm.replaceItemAt(uygulama, withItemAt: yeni)
         log("Güncelleme: ✓ sürüm \(uzak) kuruldu — bir sonraki açılışta geçerli")
+        izleyiciYenidenBaslatilmali = true
     } catch {
         log("Güncelleme: uygulama değiştirilemedi: \(error.localizedDescription)")
     }
@@ -702,28 +709,233 @@ func izinleriHazirla() {
     bekciKur(90)
 }
 
+// MARK: - Otomatik izleyici (kablo takılınca çalışır)
+
+let izleyiciEtiket = "tr.k12.sevizmir.ekranayari.izleyici"
+let izleyiciPlist = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(izleyiciEtiket).plist")
+let izleyiciPidDosyasi = destek.appendingPathComponent("izleyici.pid")
+let tercihDosyasi = destek.appendingPathComponent("otomatik_izleme.txt")
+let kullaniciAlani = "gui/\(getuid())"
+
+/// Kullanıcının menüden seçtiği durum (varsayılan: açık)
+func otomatikAcikMi() -> Bool {
+    let t = (try? String(contentsOf: tercihDosyasi, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return t != "kapali"
+}
+func otomatikTercihKaydet(_ acik: Bool) {
+    try? (acik ? "acik" : "kapali").write(to: tercihDosyasi, atomically: true, encoding: .utf8)
+    log("İzleyici: otomatik çalışma \(acik ? "AÇILDI" : "KAPATILDI")")
+}
+
+func izleyiciPid() -> pid_t? {
+    guard let s = try? String(contentsOf: izleyiciPidDosyasi, encoding: .utf8),
+          let p = pid_t(s.trimmingCharacters(in: .whitespacesAndNewlines)), p > 0, kill(p, 0) == 0 else { return nil }
+    return p
+}
+
+/// İzleyiciyi oturum açılışında başlayacak şekilde kurar (zaten doğru kuruluysa dokunmaz)
+func izleyiciKur() {
+    let uygulama = Bundle.main.bundleURL
+    guard uygulama.pathExtension == "app", !uygulama.path.contains("/AppTranslocation/"),
+          let yol = Bundle.main.executablePath else {
+        log("İzleyici: geçici konumdan çalışıyor — kurulmadı"); return
+    }
+    let tanim: [String: Any] = [
+        "Label": izleyiciEtiket,
+        "ProgramArguments": [yol, "--izle"],
+        "RunAtLoad": true,
+        "KeepAlive": ["SuccessfulExit": false],
+        "AbandonProcessGroup": true,
+        "ProcessType": "Interactive",
+        "LimitLoadToSessionType": "Aqua"
+    ]
+    guard let veri = try? PropertyListSerialization.data(fromPropertyList: tanim, format: .xml, options: 0) else { return }
+    if (try? Data(contentsOf: izleyiciPlist)) == veri, izleyiciPid() != nil { return }   // zaten çalışıyor
+    try? fm.createDirectory(at: izleyiciPlist.deletingLastPathComponent(), withIntermediateDirectories: true)
+    _ = calistir("/bin/launchctl", ["bootout", "\(kullaniciAlani)/\(izleyiciEtiket)"])
+    do { try veri.write(to: izleyiciPlist, options: .atomic) } catch { log("İzleyici: kurulamadı (\(error.localizedDescription))"); return }
+    let (d, _) = calistir("/bin/launchctl", ["bootstrap", kullaniciAlani, izleyiciPlist.path])
+    log(d == 0 ? "İzleyici: ✓ arka planda başlatıldı" : "İzleyici: başlatılamadı (launchctl \(d))")
+}
+
+func izleyiciKaldir() {
+    guard fm.fileExists(atPath: izleyiciPlist.path) else { return }
+    try? fm.removeItem(at: izleyiciPlist)
+    _ = calistir("/bin/launchctl", ["bootout", "\(kullaniciAlani)/\(izleyiciEtiket)"])
+    log("İzleyici: kaldırıldı")
+}
+
+func zoomToplantiPenceresiVar() -> Bool {
+    guard AXIsProcessTrusted(),
+          let app = NSRunningApplication.runningApplications(withBundleIdentifier: "us.zoom.xos").first else { return false }
+    let ax = AXUIElementCreateApplication(app.processIdentifier)
+    AXUIElementSetMessagingTimeout(ax, 1.0)
+    var deger: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &deger) == .success,
+          let pencereler = deger as? [AXUIElement] else { return false }
+    for p in pencereler {
+        var t: CFTypeRef?
+        if AXUIElementCopyAttributeValue(p, kAXTitleAttribute as CFString, &t) == .success,
+           let ad = t as? String, ad == "Zoom Toplantısı" || ad == "Zoom Meeting" { return true }
+    }
+    return false
+}
+
+let ekranGeriCagrim: CGDisplayReconfigurationCallBack = { id, bayrak, kullanici in
+    guard let k = kullanici, !bayrak.contains(.beginConfigurationFlag) else { return }
+    let iz = Unmanaged<Izleyici>.fromOpaque(k).takeUnretainedValue()
+    DispatchQueue.main.async { iz.ekranDegisti() }
+}
+
+final class Izleyici: NSObject, NSApplicationDelegate {
+    var durum: NSStatusItem?
+    var otomatikOgesi: NSMenuItem?
+    var bilinenHariciler = Set<CGDirectDisplayID>()
+    var isCalisiyor = false
+    var sonBitis = Date.distantPast
+    var bekleyen: DispatchWorkItem?
+    var toplantiAcikti = false
+
+    func applicationDidFinishLaunching(_ n: Notification) {
+        try? String(ProcessInfo.processInfo.processIdentifier).write(to: izleyiciPidDosyasi, atomically: true, encoding: .utf8)
+        kayitliAyarlariUygula()
+        bilinenHariciler = Set(hariciEkranlar())
+        toplantiAcikti = zoomToplantiPenceresiVar()
+        menuKur()
+        CGDisplayRegisterReconfigurationCallback(ekranGeriCagrim, Unmanaged.passUnretained(self).toOpaque())
+        Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in self?.zoomKontrol() }
+        log("İzleyici: başladı (sürüm \(kendiSurumum()), otomatik \(otomatikAcikMi() ? "açık" : "kapalı"))")
+    }
+
+    /// Dock simgesine / uygulamaya tıklanınca: elle çalıştırma
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        isiBaslat([], neden: "elle başlatıldı")
+        return false
+    }
+
+    func menuKur() {
+        let d = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let resim = NSImage(systemSymbolName: "display", accessibilityDescription: "Ekran Ayarı") {
+            resim.isTemplate = true
+            d.button?.image = resim
+        } else {
+            d.button?.title = "EA"
+        }
+        let m = NSMenu()
+        let baslik = NSMenuItem(title: "Ekran Ayarı (sürüm \(kendiSurumum()))", action: nil, keyEquivalent: "")
+        baslik.isEnabled = false
+        m.addItem(baslik)
+        m.addItem(.separator())
+        m.addItem(oge("Şimdi çalıştır", #selector(simdi)))
+        let o = oge("Kablo takılınca otomatik çalış", #selector(otomatikDegistir))
+        m.addItem(o); otomatikOgesi = o
+        m.addItem(.separator())
+        m.addItem(oge("Kayıtları göster", #selector(kayitlar)))
+        durum = d
+        d.menu = m
+        guncelGorunum()
+    }
+    func oge(_ t: String, _ s: Selector) -> NSMenuItem {
+        let i = NSMenuItem(title: t, action: s, keyEquivalent: ""); i.target = self; return i
+    }
+    func guncelGorunum() {
+        let acik = otomatikAcikMi()
+        otomatikOgesi?.state = acik ? .on : .off
+        durum?.button?.appearsDisabled = !acik
+        durum?.button?.toolTip = acik ? "Ekran Ayarı — kablo takılınca otomatik çalışır" : "Ekran Ayarı — otomatik çalışma kapalı"
+    }
+    @objc func simdi() { isiBaslat([], neden: "menüden başlatıldı") }
+    @objc func otomatikDegistir() { otomatikTercihKaydet(!otomatikAcikMi()); guncelGorunum() }
+    @objc func kayitlar() { NSWorkspace.shared.open(logURL) }
+
+    func ekranDegisti() {
+        bekleyen?.cancel()
+        let is_ = DispatchWorkItem { [weak self] in self?.degerlendir() }
+        bekleyen = is_
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: is_)   // kablo takılırken gelen olayları birleştir
+    }
+
+    func degerlendir() {
+        let simdiki = Set(hariciEkranlar())
+        let yeni = simdiki.subtracting(bilinenHariciler)
+        bilinenHariciler = simdiki
+        guard !yeni.isEmpty, !isCalisiyor, Date().timeIntervalSince(sonBitis) > 10 else { return }
+        kayitliAyarlariUygula()
+        if !otomatikIzlemeIzinli { log("İzleyici: uzaktan kapatıldı, kaldırılıyor"); izleyiciKaldir(); exit(0) }
+        let adlar = yeni.compactMap(ekranAdi).joined(separator: ", ")
+        guard otomatikAcikMi() else { log("İzleyici: ekran takıldı (\(adlar)) ama otomatik çalışma kapalı"); return }
+        isiBaslat(["--otomatik"], neden: "ekran takıldı: \(adlar)")
+    }
+
+    func zoomKontrol() {
+        guard !isCalisiyor else { return }
+        let acik = zoomToplantiPenceresiVar()
+        defer { toplantiAcikti = acik }
+        guard acik, !toplantiAcikti, otomatikAcikMi(), zoomToplantisiniIzle, adimZoom,
+              !hariciEkranlar().isEmpty, Date().timeIntervalSince(sonBitis) > 10 else { return }
+        isiBaslat(["--sadece-zoom"], neden: "Zoom toplantısı başladı")
+    }
+
+    func isiBaslat(_ arg: [String], neden: String) {
+        guard !isCalisiyor, let yol = Bundle.main.executablePath else { return }
+        log("İzleyici: \(neden) → çalıştırılıyor")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: yol)
+        p.arguments = arg
+        p.terminationHandler = { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isCalisiyor = false
+                self.sonBitis = Date()
+                self.bilinenHariciler = Set(hariciEkranlar())
+                self.toplantiAcikti = zoomToplantiPenceresiVar()
+            }
+        }
+        do { try p.run(); isCalisiyor = true } catch { log("İzleyici: başlatılamadı: \(error.localizedDescription)") }
+    }
+}
+
+func izleyiciModu() -> Never {
+    log("===== İzleyici sürüm \(kendiSurumum()) =====")
+    let iz = Izleyici()
+    NSApp.setActivationPolicy(.accessory)
+    NSApp.delegate = iz
+    NSApp.run()
+    exit(0)
+}
+
 // MARK: - Ana akış
 
 _ = NSApplication.shared
+let argumanlar = CommandLine.arguments
+if argumanlar.contains("--izle") { izleyiciModu() }
+let sadeceZoom = argumanlar.contains("--sadece-zoom")
+let otomatikCalisma = argumanlar.contains("--otomatik") || sadeceZoom
 
-// Aynı anda tek kopya: önceki takılı kalmış kopyaları kapat
+// Aynı anda tek kopya: önceki takılı kalmış kopyaları kapat (arka plandaki izleyiciye dokunma)
 if let bid = Bundle.main.bundleIdentifier {
     let benim = ProcessInfo.processInfo.processIdentifier
+    let izleyici = izleyiciPid()
     for app in NSRunningApplication.runningApplications(withBundleIdentifier: bid)
-    where app.processIdentifier != benim {
+    where app.processIdentifier != benim && app.processIdentifier != izleyici {
         app.forceTerminate()
     }
 }
 
+// Elle açıldıysa ve izleyici çalışıyorsa: işi izleyici üzerinden değil doğrudan burada yap
 bekciKur(90)
-log("===== EkranAyari sürüm \(kendiSurumum()) başladı (\(Bundle.main.bundlePath)) =====")
+log("===== EkranAyari sürüm \(kendiSurumum()) başladı (\(sadeceZoom ? "Zoom toplantısı" : otomatikCalisma ? "otomatik" : "elle")) =====")
 
 kayitliAyarlariUygula()
 let guncellemeBitti = DispatchSemaphore(value: 0)
-DispatchQueue.global(qos: .utility).async { guncelle(); guncellemeBitti.signal() }
+if sadeceZoom { guncellemeBitti.signal() } else {
+    DispatchQueue.global(qos: .utility).async { guncelle(); guncellemeBitti.signal() }
+}
 izinleriHazirla()
 
-if hariciEkranlar().isEmpty {
+if sadeceZoom {
+    // yalnızca Zoom adımı
+} else if hariciEkranlar().isEmpty {
     log("Harici ekran bulunamadı — ekran ve ses adımları atlandı")
 } else {
     let adlar = hariciEkranlar().compactMap(ekranAdi)
@@ -766,12 +978,24 @@ if adimZoom { zoomHoparlorunuAyarla() }
 
 let mesaj = ozet.isEmpty ? "Yapılacak bir değişiklik bulunamadı" : ozet.joined(separator: " • ")
 log("Bitti: \(mesaj)")
-bildir(mesaj)
-if !bitisSesi.isEmpty, let ses = NSSound(named: NSSound.Name(bitisSesi)) {
-    ses.play()
-    bekle(max(0.8, ses.duration))
+// Otomatik çalışmada değişiklik yoksa kullanıcıyı rahatsız etme
+if !(otomatikCalisma && ozet.isEmpty) {
+    bildir(mesaj)
+    if !bitisSesi.isEmpty, let ses = NSSound(named: NSSound.Name(bitisSesi)) {
+        ses.play()
+        bekle(max(0.8, ses.duration))
+    }
 }
-if dockaSabitlensin { docaSabitle() }
+if !otomatikCalisma {
+    if dockaSabitlensin { docaSabitle() }
+    // Arka plan izleyicisini ayara göre kur / kaldır
+    if otomatikIzlemeIzinli { izleyiciKur() } else { izleyiciKaldir() }
+}
 // Arka plandaki güncelleme bitmediyse kısa süre bekle (işler zaten tamamlandı)
 _ = guncellemeBitti.wait(timeout: .now() + 35)
+// Uygulama güncellendiyse izleyiciyi yeni sürümle yeniden başlat
+if izleyiciYenidenBaslatilmali && fm.fileExists(atPath: izleyiciPlist.path) {
+    log("İzleyici: yeni sürümle yeniden başlatılıyor")
+    _ = calistir("/bin/launchctl", ["kickstart", "-k", "\(kullaniciAlani)/\(izleyiciEtiket)"])
+}
 exit(0)

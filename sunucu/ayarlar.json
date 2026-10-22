@@ -7,5 +7,7 @@
   "zoomAyarla": true,
   "bitisSesi": "Glass",
   "dockaSabitle": true,
+  "otomatikIzleme": true,
+  "zoomToplantisiniIzle": true,
   "yeniSunucu": "https://raw.githubusercontent.com/anurayli/ekranayari/main/sunucu/"
 }
