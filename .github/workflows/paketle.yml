@@ -1,0 +1,40 @@
+name: Paketle
+# kaynak/main.swift (veya simge, Paketle.command) değişince GitHub'ın Mac'inde derler
+# ve sunucu/EkranAyari.zip + sunucu/surum.json'u günceller. Mac'ler yeni sürümü kendiliğinden alır.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'kaynak/main.swift'
+      - 'simge.png'
+      - 'Paketle.command'
+      - 'sunucu_adresi.txt'
+      - '.github/workflows/paketle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  paketle:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derle ve paketle
+        env:
+          TERM: dumb
+        run: bash Paketle.command < /dev/null
+
+      - name: Kontrol
+        run: |
+          test -s sunucu/EkranAyari.zip
+          cat sunucu/surum.json
+
+      - name: Sunucuya yayınla
+        run: |
+          git config user.name "EkranAyari Paketleyici"
+          git config user.email "actions@github.com"
+          git add sunucu/EkranAyari.zip sunucu/surum.json kaynak/SURUM
+          git commit -m "Yeni sürüm $(cat kaynak/SURUM)" || echo "Değişiklik yok"
+          git push
