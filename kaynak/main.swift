@@ -90,7 +90,6 @@ var zoomToplantisiniIzle = true     // izleyici: Zoom toplantısı başlayınca 
 var uykuyuEngelleVarsayilan = true  // izleyici: harici ekran bağlıyken Mac uykuya geçmesin
 var sesSeviyesi = 70                // harici ekran sesi seçilince ayarlanacak seviye (%); -1 = dokunma
 let gelistirici = "Ali NURAYLI"
-let geriBildirimAdresi = "anurayli@sevizmir.k12.tr"
 
 func ayarlariUygula(_ j: [String: Any]) {
     if let v = j["hedefHz"] as? Double { hedefHz = v }
@@ -859,7 +858,6 @@ final class Izleyici: NSObject, NSApplicationDelegate {
         m.addItem(oge("Ders sırasında bildirimleri sustur…", #selector(bildirimSustur)))
         m.addItem(.separator())
         m.addItem(oge("Kayıtları göster", #selector(kayitlar)))
-        m.addItem(oge("Geri bildirim gönder…", #selector(geriBildirim)))
         m.addItem(oge("Ekran Ayarı hakkında", #selector(hakkinda)))
         durum = d
         d.menu = m
@@ -905,42 +903,20 @@ final class Izleyici: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let a = NSAlert()
         a.messageText = "Ders sırasında bildirimleri susturma"
-        a.informativeText = "macOS bunu kendisi yapabiliyor: Ekran Ayarı yerleşik ekranı akıllı tahtaya yansıttığı için, " +
-            "\"Rahatsız Etme\" odağında ekran yansıtılırken otomatik açılma seçeneği açıksa bildirimler ders boyunca kendiliğinden susar.\n\n" +
-            "\"Ayarları Aç\"a basınca Odak ayarları açılır: Rahatsız Etme'yi seçip \"Ekranı yansıtırken / paylaşırken\" " +
-            "seçeneğini açın (adı macOS sürümüne göre biraz farklı olabilir)."
+        a.informativeText = "Ekran Ayarı ekranı akıllı tahtaya yansıttığı için bunu macOS kendisi yapabilir:\n\n" +
+            "\"Ayarları Aç\"a basınca Bildirimler ayarı açılır. En üstteki \"Bildirimlere izin ver\" bölümünde " +
+            "\"Ekran yansıtılırken veya paylaşılırken\" seçeneğini KAPATIN.\n\n" +
+            "Bundan sonra ekran yansıtıldığı sürece bildirimler susar, kablo çıkınca geri gelir. Her Mac'te bir kez yapılır."
         a.addButton(withTitle: "Ayarları Aç"); a.addButton(withTitle: "Vazgeç")
         if a.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Focus-Settings.extension")!)
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
         }
     }
 
-    @objc func geriBildirim() {
-        let surum = kendiSurumum()
-        let os = ProcessInfo.processInfo.operatingSystemVersionString
-        let son = ((try? String(contentsOf: logURL, encoding: .utf8)) ?? "")
-            .split(separator: "\n").suffix(25).joined(separator: "\n")
-        let konu = "Ekran Ayarı geri bildirim (sürüm \(surum))"
-        let govde = "Merhaba,\n\n[Önerinizi veya yaşadığınız sorunu buraya yazın]\n\n\n" +
-            "— Teknik bilgi —\nSürüm: \(surum)\nmacOS: \(os)\nBilgisayar: \(Host.current().localizedName ?? "?")\n\n" +
-            "Son kayıtlar:\n\(son)\n"
-        if let posta = NSSharingService(named: .composeEmail) {
-            posta.recipients = [geriBildirimAdresi]
-            posta.subject = konu
-            posta.perform(withItems: [govde, logURL])
-        } else {
-            var c = URLComponents(); c.scheme = "mailto"; c.path = geriBildirimAdresi
-            c.queryItems = [URLQueryItem(name: "subject", value: konu), URLQueryItem(name: "body", value: String(govde.prefix(1500)))]
-            if let u = c.url { NSWorkspace.shared.open(u) }
-        }
-        log("İzleyici: geri bildirim penceresi açıldı")
-    }
 
     @objc func hakkinda() {
         NSApp.activate(ignoringOtherApps: true)
-        let yazi = NSMutableAttributedString(string:
-            "Akıllı tahta / harici ekran için tek tık ayar:\nyansıtma, 30 Hz, ses çıkışı ve Zoom hoparlörü.\n\n" +
-            "Geliştirici: \(gelistirici)\nGeri bildirim: \(geriBildirimAdresi)\n")
+        let yazi = NSMutableAttributedString(string: "Geliştirici: \(gelistirici)")
         yazi.addAttribute(.font, value: NSFont.systemFont(ofSize: 11), range: NSRange(location: 0, length: yazi.length))
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Ekran Ayarı",
